@@ -26,3 +26,9 @@ Team.create(:team_code => "2", :name => "MU")
 
 Organization.create
 Company.create
+
+require 'securerandom'
+
+License.create(:id => SecureRandom.uuid, :name => "license 1")
+License.create(:id => SecureRandom.uuid, :name => "license 2")
+License.create(:id => SecureRandom.uuid, :name => "license 3")

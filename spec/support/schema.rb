@@ -5,6 +5,7 @@ ActiveRecord::Schema.define do
     create_table(table) do |t|
     t.string :name
     t.references :resource, :polymorphic => true
+    t.string :resource_uuid
 
     t.timestamps null: false
     end
@@ -57,5 +58,12 @@ ActiveRecord::Schema.define do
 
   create_table(:organizations) do |t|
     t.string :type
+  end
+
+  # Use string primary key to simulate UUID (SQLite3 doesn't support native UUID)
+  create_table(:licenses, id: false) do |t|
+    t.string :id, primary_key: true
+    t.string :name
+    t.timestamps null: false
   end
 end
