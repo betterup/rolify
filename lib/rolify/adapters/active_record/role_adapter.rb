@@ -12,9 +12,12 @@ module Rolify
         wrap_conditions = relation.name != role_class.name
 
         conditions = if args[:resource].is_a?(Class)
-                       {:resource_type => args[:resource].to_s, :resource_id => nil }
+                       {:resource_type => args[:resource].to_s, :resource_id => nil, :resource_uuid => nil }
                      elsif args[:resource].present?
-                       {:resource_type => args[:resource].class.name, :resource_id => args[:resource].id}
+                       id_field = resource_id_field(args[:resource])
+                       base_conditions = {:resource_type => args[:resource].class.name}
+                       base_conditions.merge!(id_field => args[:resource].id)
+                       base_conditions
                      else
                        {}
                      end
@@ -28,27 +31,44 @@ module Rolify
       def find_cached(relation, args)
         resource_id = (args[:resource].nil? || args[:resource].is_a?(Class) || args[:resource] == :any) ? nil : args[:resource].id
         resource_type = args[:resource].is_a?(Class) ? args[:resource].to_s : args[:resource].class.name
+        is_string_id = resource_id && string_id?(resource_id)
 
         return relation.find_all { |role| role.name == args[:name].to_s } if args[:resource] == :any
 
         relation.find_all do |role|
-          (role.name == args[:name].to_s && role.resource_type == nil && role.resource_id == nil) ||
-          (role.name == args[:name].to_s && role.resource_type == resource_type && role.resource_id == nil) ||
-          (role.name == args[:name].to_s && role.resource_type == resource_type && role.resource_id == resource_id)
+          (role.name == args[:name].to_s && role.resource_type == nil && role.resource_id == nil && role.resource_uuid == nil) ||
+          (role.name == args[:name].to_s && role.resource_type == resource_type && role.resource_id == nil && role.resource_uuid == nil) ||
+          (is_string_id && role.name == args[:name].to_s && role.resource_type == resource_type && role.resource_uuid == resource_id) ||
+          (!is_string_id && role.name == args[:name].to_s && role.resource_type == resource_type && role.resource_id == resource_id)
         end
       end
 
       def find_cached_strict(relation, args)
         resource_id = (args[:resource].nil? || args[:resource].is_a?(Class)) ? nil : args[:resource].id
         resource_type = args[:resource].is_a?(Class) ? args[:resource].to_s : args[:resource].class.name
+        is_string_id = resource_id && string_id?(resource_id)
 
         relation.find_all do |role|
-          role.resource_id == resource_id && role.resource_type == resource_type && role.name == args[:name].to_s
+          if is_string_id
+            role.resource_uuid == resource_id && role.resource_id == nil && role.resource_type == resource_type && role.name == args[:name].to_s
+          else
+            role.resource_id == resource_id && role.resource_uuid == nil && role.resource_type == resource_type && role.name == args[:name].to_s
+          end
         end
       end
 
       def find_or_create_by(role_name, resource_type = nil, resource_id = nil)
-        role_class.where(:name => role_name, :resource_type => resource_type, :resource_id => resource_id).first_or_create
+        conditions = { :name => role_name, :resource_type => resource_type }
+
+        if resource_id && string_id?(resource_id)
+          conditions[:resource_uuid] = resource_id
+          conditions[:resource_id] = nil
+        else
+          conditions[:resource_id] = resource_id
+          conditions[:resource_uuid] = nil
+        end
+
+        role_class.where(conditions).first_or_create
       end
 
       def add(relation, role)
@@ -57,8 +77,19 @@ module Rolify
 
       def remove(relation, role_name, resource = nil)
         cond = { :name => role_name }
-        cond[:resource_type] = (resource.is_a?(Class) ? resource.to_s : resource.class.name) if resource
-        cond[:resource_id] = resource.id if resource && !resource.is_a?(Class)
+        if resource
+          cond[:resource_type] = (resource.is_a?(Class) ? resource.to_s : resource.class.name)
+          if !resource.is_a?(Class)
+            id_field = resource_id_field(resource)
+            if id_field == :resource_uuid
+              cond[:resource_uuid] = resource.id
+              cond[:resource_id] = nil
+            else
+              cond[:resource_id] = resource.id
+              cond[:resource_uuid] = nil
+            end
+          end
+        end
         roles = relation.roles.where(cond)
         if roles
           relation.roles.delete(roles)
@@ -85,6 +116,23 @@ module Rolify
 
       private
 
+      def string_id?(id)
+        id.is_a?(String)
+      end
+
+      def resource_id_field(resource)
+        return if resource.nil? || resource.is_a?(Class)
+        return :resource_uuid if string_id?(resource.id)
+        
+        :resource_id
+      end
+
+      def resource_id_value(resource)
+        return if resource.nil? || resource.is_a?(Class)
+        
+        resource.id
+      end
+
       def build_conditions(relation, args)
         conditions = []
         values = []
@@ -105,14 +153,15 @@ module Rolify
 
       def build_query(role, resource = nil)
         return [ "#{role_table}.name = ?", [ role ] ] if resource == :any
-        query = "((#{role_table}.name = ?) AND (#{role_table}.resource_type IS NULL) AND (#{role_table}.resource_id IS NULL))"
+        query = "((#{role_table}.name = ?) AND (#{role_table}.resource_type IS NULL) AND (#{role_table}.resource_id IS NULL) AND (#{role_table}.resource_uuid IS NULL))"
         values = [ role ]
         if resource
           query.insert(0, "(")
-          query += " OR ((#{role_table}.name = ?) AND (#{role_table}.resource_type = ?) AND (#{role_table}.resource_id IS NULL))"
+          query += " OR ((#{role_table}.name = ?) AND (#{role_table}.resource_type = ?) AND (#{role_table}.resource_id IS NULL) AND (#{role_table}.resource_uuid IS NULL))"
           values << role << (resource.is_a?(Class) ? resource.to_s : resource.class.name)
           if !resource.is_a? Class
-            query += " OR ((#{role_table}.name = ?) AND (#{role_table}.resource_type = ?) AND (#{role_table}.resource_id = ?))"
+            id_field = resource_id_field(resource)
+            query += " OR ((#{role_table}.name = ?) AND (#{role_table}.resource_type = ?) AND (#{role_table}.#{id_field} = ?))"
             values << role << resource.class.name << resource.id
           end
           query += ")"
